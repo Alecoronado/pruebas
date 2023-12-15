@@ -1,56 +1,143 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-import time
-
-import numpy as np
-
 import streamlit as st
-from streamlit.hello.utils import show_code
+import pandas as pd
+import altair as alt
+import numpy as np
+import threading
+import io
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
+# Configuración inicial
+LOGGER = st.logger.get_logger(__name__)
+_lock = threading.Lock()
 
-def plotting_demo():
-    progress_bar = st.sidebar.progress(0)
-    status_text = st.sidebar.empty()
-    last_rows = np.random.randn(1, 1)
-    chart = st.line_chart(last_rows)
+# URLs de las hojas de Google Sheets
+sheet_url_proyectos = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSHedheaRLyqnjwtsRvlBFFOnzhfarkFMoJ04chQbKZCBRZXh_2REE3cmsRC69GwsUK0PoOVv95xptX/pub?gid=2084477941&single=true&output=csv"
+sheet_url_operaciones = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSHedheaRLyqnjwtsRvlBFFOnzhfarkFMoJ04chQbKZCBRZXh_2REE3cmsRC69GwsUK0PoOVv95xptX/pub?gid=1468153763&single=true&output=csv"
+sheet_url_desembolsos = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSHedheaRLyqnjwtsRvlBFFOnzhfarkFMoJ04chQbKZCBRZXh_2REE3cmsRC69GwsUK0PoOVv95xptX/pub?gid=1657640798&single=true&output=csv"
 
-    for i in range(1, 101):
-        new_rows = last_rows[-1, :] + np.random.randn(5, 1).cumsum(axis=0)
-        status_text.text("%i%% Complete" % i)
-        chart.add_rows(new_rows)
-        progress_bar.progress(i)
-        last_rows = new_rows
-        time.sleep(0.05)
+# Inicializar la aplicación de Streamlit
+st.title("Aplicación de Preprocesamiento de Datos")
 
-    progress_bar.empty()
+# Función para cargar los datos desde las hojas de Google Sheets
+def load_data(url):
+    with _lock:
+        return pd.read_csv(url)
 
-    # Streamlit widgets automatically run the script from top to bottom. Since
-    # this button is not connected to any other logic, it just causes a plain
-    # rerun.
-    st.button("Re-run")
+# Función para convertir el monto a un número flotante
+def convert_to_float(monto_str):
+    try:
+        monto_str = monto_str.replace('.', '').replace(',', '.')
+        return float(monto_str)
+    except ValueError:
+        return np.nan
 
+# Función para procesar los datos
+def process_data(df_proyectos, df_operaciones, df_operaciones_desembolsos):
+    # Preparar los DataFrames seleccionando las columnas requeridas
+    df_proyectos = df_proyectos[['NoProyecto', 'IDAreaPrioritaria', 'IDAreaIntervencion']]
+    df_operaciones = df_operaciones[['NoProyecto', 'NoOperacion', 'IDEtapa', 'Alias', 'Pais', 'FechaVigencia', 'Estado', 'AporteFONPLATAVigente']]
+    df_operaciones_desembolsos = df_operaciones_desembolsos[['IDDesembolso', 'NoOperacion', 'Monto', 'FechaEfectiva']]
+    
+    # Convertir 'Monto' a numérico
+    df_operaciones_desembolsos['Monto'] = df_operaciones_desembolsos['Monto'].apply(convert_to_float)
 
-st.set_page_config(page_title="Plotting Demo", page_icon="📈")
-st.markdown("# Plotting Demo")
-st.sidebar.header("Plotting Demo")
-st.write(
-    """This demo illustrates a combination of plotting and animation with
-Streamlit. We're generating a bunch of random numbers in a loop for around
-5 seconds. Enjoy!"""
-)
+    # Fusionar DataFrames
+    merged_df = pd.merge(df_operaciones_desembolsos, df_operaciones, on='NoOperacion', how='left')
+    merged_df = pd.merge(merged_df, df_proyectos, on='NoProyecto', how='left')
+    
+    # Convertir fechas y calcular años
+    merged_df['FechaEfectiva'] = pd.to_datetime(merged_df['FechaEfectiva'], dayfirst=True, errors='coerce')
+    merged_df['FechaVigencia'] = pd.to_datetime(merged_df['FechaVigencia'], dayfirst=True, errors='coerce')
+    merged_df['Ano'] = ((merged_df['FechaEfectiva'] - merged_df['FechaVigencia']).dt.days / 365).fillna(-1)
+    filtered_df = merged_df[merged_df['Ano'] >= 0]
+    filtered_df['Ano'] = filtered_df['Ano'].astype(int)
 
-plotting_demo()
+    # Crear diccionario para mapear IDEtapa a Alias
+    etapa_to_alias = df_operaciones.set_index('IDEtapa')['Alias'].to_dict()
+    filtered_df['IDEtapa'] = filtered_df['IDEtapa'].astype(str)
+    filtered_df['IDEtapa_Alias'] = filtered_df['IDEtapa'].map(lambda x: f"{x} ({etapa_to_alias.get(x, '')})")
 
-show_code(plotting_demo)
+    # Selectbox para filtrar por IDEtapa
+    unique_etapas_alias = filtered_df['IDEtapa_Alias'].unique()
+    selected_etapa_alias = st.selectbox('Select IDEtapa to filter', unique_etapas_alias)
+    selected_etapa = selected_etapa_alias.split(' ')[0]
+    filtered_result_df = filtered_df[filtered_df['IDEtapa'] == selected_etapa]
+
+    # Realizar cálculos
+    result_df = filtered_result_df.groupby(['IDEtapa', 'Ano'])['Monto'].sum().reset_index()
+    result_df['Monto Acumulado'] = result_df.groupby(['IDEtapa'])['Monto'].cumsum().reset_index(drop=True)
+    result_df['Porcentaje del Monto'] = result_df.groupby(['IDEtapa'])['Monto'].apply(lambda x: x / x.sum() * 100).reset_index(drop=True)
+    result_df['Porcentaje Acumulado'] = result_df.groupby(['IDEtapa'])['Monto Acumulado'].apply(lambda x: x / x.max() * 100).reset_index(drop=True)
+
+    # Convertir 'Monto' y 'Monto Acumulado' a millones y redondear a 2 decimales
+    result_df['Monto'] = (result_df['Monto'] / 1000000).round(2)
+    result_df['Monto Acumulado'] = (result_df['Monto Acumulado'] / 1000000).round(2)
+    
+    return result_df
+
+# Función para convertir DataFrame a Excel
+def dataframe_to_excel_bytes(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='Resultados', index=False)
+    output.seek(0)
+    return output
+
+# Función para crear una gráfica de líneas con etiquetas
+def line_chart_with_labels(data, x_col, y_col, title, color):
+    chart = alt.Chart(data).mark_line(point=True, color=color).encode(
+        x=alt.X(f'{x_col}:O', axis=alt.Axis(title='Año', labelAngle=0)),
+        y=alt.Y(f'{y_col}:Q', axis=alt.Axis(title=y_col)),
+        tooltip=[x_col, y_col]
+    ).properties(
+        title=title,
+        width=600,
+        height=400
+    )
+    text = chart.mark_text(
+        align='left',
+        baseline='middle',
+        dx=18,
+        dy=-18
+    ).encode(
+        text=alt.Text(f'{y_col}:Q', format='.2f')
+    )
+    return chart + text
+
+# Función principal
+def run():
+    # Cargar y procesar los datos
+    df_proyectos = load_data(sheet_url_proyectos)
+    df_operaciones = load_data(sheet_url_operaciones)
+    df_operaciones_desembolsos = load_data(sheet_url_desembolsos)
+    result_df = process_data(df_proyectos, df_operaciones, df_operaciones_desembolsos)
+
+    # Mostrar y descargar los datos procesados
+    st.write(result_df)
+    if not result_df.empty:
+        excel_bytes = dataframe_to_excel_bytes(result_df)
+        st.download_button(
+            label="Descargar DataFrame en Excel",
+            data=excel_bytes,
+            file_name="resultados_desembolsos.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # Crear y mostrar gráficas
+    if not result_df.empty:
+        color_monto = 'steelblue'
+        color_acumulado = 'goldenrod'
+        color_porcentaje = 'salmon'
+
+        chart_monto = line_chart_with_labels(result_df, 'Ano', 'Monto', 'Monto por Año en Millones', color_monto)
+        chart_monto_acumulado = line_chart_with_labels(result_df, 'Ano', 'Monto Acumulado', 'Monto Acumulado por Año en Millones', color_acumulado)
+        chart_porcentaje_acumulado = line_chart_with_labels(result_df, 'Ano', 'Porcentaje Acumulado', 'Porcentaje Acumulado del Monto por Año', color_porcentaje)
+
+        st.altair_chart(chart_monto, use_container_width=True)
+        st.altair_chart(chart_monto_acumulado, use_container_width=True)
+        st.altair_chart(chart_porcentaje_acumulado, use_container_width=True)
+
+if __name__ == "__main__":
+    run()
+
