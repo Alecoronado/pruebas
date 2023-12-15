@@ -50,8 +50,10 @@ def process_data(df_proyectos, df_operaciones, df_operaciones_desembolsos):
     merged_df['FechaEfectiva'] = pd.to_datetime(merged_df['FechaEfectiva'], dayfirst=True, errors='coerce')
     merged_df['FechaVigencia'] = pd.to_datetime(merged_df['FechaVigencia'], dayfirst=True, errors='coerce')
     merged_df['Ano'] = ((merged_df['FechaEfectiva'] - merged_df['FechaVigencia']).dt.days / 365).fillna(-1)
+    merged_df['Ano_FechaEfectiva'] = pd.to_datetime(merged_df['FechaEfectiva']).dt.year
     filtered_df = merged_df[merged_df['Ano'] >= 0]
     filtered_df['Ano'] = filtered_df['Ano'].astype(int)
+    st.write(filtered_df)
 
     # Crear diccionario para mapear IDEtapa a Alias
     etapa_to_alias = df_operaciones.set_index('IDEtapa')['Alias'].to_dict()
@@ -74,7 +76,19 @@ def process_data(df_proyectos, df_operaciones, df_operaciones_desembolsos):
     result_df['Monto'] = (result_df['Monto'] / 1000000).round(2)
     result_df['Monto Acumulado'] = (result_df['Monto Acumulado'] / 1000000).round(2)
     
-    return result_df
+    # Realizar cálculos para result_df_ano_efectiva
+    result_df_ano_efectiva = filtered_result_df.groupby(['IDEtapa', 'Ano_FechaEfectiva'])['Monto'].sum().reset_index()
+    result_df_ano_efectiva['Monto Acumulado'] = result_df_ano_efectiva.groupby(['IDEtapa'])['Monto'].cumsum().reset_index(drop=True)
+    result_df_ano_efectiva['Porcentaje del Monto'] = result_df_ano_efectiva.groupby(['IDEtapa'])['Monto'].apply(lambda x: x / x.sum() * 100).reset_index(drop=True)
+    result_df_ano_efectiva['Porcentaje Acumulado'] = result_df_ano_efectiva.groupby(['IDEtapa'])['Monto Acumulado'].apply(lambda x: x / x.max() * 100).reset_index(drop=True)
+
+    # Convertir 'Monto' y 'Monto Acumulado' a millones y redondear a 2 decimales para ambas tablas
+    result_df['Monto'] = (result_df['Monto'] / 1000000).round(2)
+    result_df['Monto Acumulado'] = (result_df['Monto Acumulado'] / 1000000).round(2)
+    result_df_ano_efectiva['Monto'] = (result_df_ano_efectiva['Monto'] / 1000000).round(2)
+    result_df_ano_efectiva['Monto Acumulado'] = (result_df_ano_efectiva['Monto Acumulado'] / 1000000).round(2)
+
+    return result_df, result_df_ano_efectiva
 
 # Función para convertir DataFrame a Excel
 def dataframe_to_excel_bytes(df):
@@ -105,39 +119,42 @@ def line_chart_with_labels(data, x_col, y_col, title, color):
     )
     return chart + text
 
-# Función principal
+#Funcion
 def run():
     # Cargar y procesar los datos
     df_proyectos = load_data(sheet_url_proyectos)
     df_operaciones = load_data(sheet_url_operaciones)
     df_operaciones_desembolsos = load_data(sheet_url_desembolsos)
-    result_df = process_data(df_proyectos, df_operaciones, df_operaciones_desembolsos)
+    result_df, result_df_ano_efectiva = process_data(df_proyectos, df_operaciones, df_operaciones_desembolsos)
 
-    # Mostrar y descargar los datos procesados
-    st.write(result_df)
-    if not result_df.empty:
-        excel_bytes = dataframe_to_excel_bytes(result_df)
-        st.download_button(
-            label="Descargar DataFrame en Excel",
-            data=excel_bytes,
-            file_name="resultados_desembolsos.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    # Define los colores para cada gráfico
+    color_monto = 'steelblue'
+    color_acumulado = 'goldenrod'
+    color_porcentaje = 'salmon'
 
-    # Crear y mostrar gráficas
-    if not result_df.empty:
-        color_monto = 'steelblue'
-        color_acumulado = 'goldenrod'
-        color_porcentaje = 'salmon'
+    # Crear y mostrar gráficos para result_df
+    chart_monto = line_chart_with_labels(result_df, 'Ano', 'Monto', 'Monto por Año en Millones', color_monto)
+    chart_monto_acumulado = line_chart_with_labels(result_df, 'Ano', 'Monto Acumulado', 'Monto Acumulado por Año en Millones', color_acumulado)
+    chart_porcentaje_acumulado = line_chart_with_labels(result_df, 'Ano', 'Porcentaje Acumulado', 'Porcentaje Acumulado del Monto por Año', color_porcentaje)
 
-        chart_monto = line_chart_with_labels(result_df, 'Ano', 'Monto', 'Monto por Año en Millones', color_monto)
-        chart_monto_acumulado = line_chart_with_labels(result_df, 'Ano', 'Monto Acumulado', 'Monto Acumulado por Año en Millones', color_acumulado)
-        chart_porcentaje_acumulado = line_chart_with_labels(result_df, 'Ano', 'Porcentaje Acumulado', 'Porcentaje Acumulado del Monto por Año', color_porcentaje)
+    st.altair_chart(chart_monto, use_container_width=True)
+    st.altair_chart(chart_monto_acumulado, use_container_width=True)
+    st.altair_chart(chart_porcentaje_acumulado, use_container_width=True)
+    
+    # Mostrar la tabla "Tabla por Año"
+    st.write("Tabla por Año:", result_df)
+  
+    # Crear y mostrar gráficos para result_df_ano_efectiva
+    chart_monto_efectiva = line_chart_with_labels(result_df_ano_efectiva, 'Ano_FechaEfectiva', 'Monto', 'Monto por Año de Fecha Efectiva en Millones', color_monto)
+    chart_monto_acumulado_efectiva = line_chart_with_labels(result_df_ano_efectiva, 'Ano_FechaEfectiva', 'Monto Acumulado', 'Monto Acumulado por Año de Fecha Efectiva en Millones', color_acumulado)
+    chart_porcentaje_acumulado_efectiva = line_chart_with_labels(result_df_ano_efectiva, 'Ano_FechaEfectiva', 'Porcentaje Acumulado', 'Porcentaje Acumulado del Monto por Año de Fecha Efectiva', color_porcentaje)
 
-        st.altair_chart(chart_monto, use_container_width=True)
-        st.altair_chart(chart_monto_acumulado, use_container_width=True)
-        st.altair_chart(chart_porcentaje_acumulado, use_container_width=True)
+    st.altair_chart(chart_monto_efectiva, use_container_width=True)
+    st.altair_chart(chart_monto_acumulado_efectiva, use_container_width=True)
+    st.altair_chart(chart_porcentaje_acumulado_efectiva, use_container_width=True)
+
+    # Mostrar la tabla "Tabla por Año de Fecha Efectiva"
+    st.write("Tabla por Año de Fecha Efectiva:", result_df_ano_efectiva)
 
 if __name__ == "__main__":
     run()
-
