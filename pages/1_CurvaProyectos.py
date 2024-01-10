@@ -55,6 +55,40 @@ def process_data(df_proyectos, df_operaciones, df_operaciones_desembolsos):
     filtered_df['Ano'] = filtered_df['Ano'].astype(int)
     st.write(filtered_df)
 
+    # Cargar y procesar los datos
+    df_proyectos = load_data(sheet_url_proyectos)
+    df_operaciones = load_data(sheet_url_operaciones)
+    df_desembolsos = load_data(sheet_url_desembolsos)
+
+    processed_data = process_data(df_proyectos, df_operaciones, df_desembolsos)
+
+    # Crear tablas resumen y visualizaciones
+    # ... (aquí va la lógica para crear las tablas resumen) ...
+
+    # Ejemplo: Crear una tabla pivot para mostrar montos acumulados por año
+    pivot_table = processed_data.pivot_table(
+        index='IDEtapa',
+        columns='Ano',
+        values='Monto',
+        aggfunc='sum',
+        fill_value=0
+    )
+
+    # Mostrar la tabla pivot
+    st.write("Tabla Pivot de Montos por Año y Etapa")
+    st.dataframe(pivot_table)
+
+    # Crear gráficos u otras visualizaciones basadas en la tabla pivot
+    chart = alt.Chart(pivot_table.reset_index()).mark_bar().encode(
+        x='IDEtapa',
+        y='Monto',
+        color='Ano:N',
+        tooltip=['IDEtapa', 'Monto']
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+
     # Crear diccionario para mapear IDEtapa a Alias
     etapa_to_alias = df_operaciones.set_index('IDEtapa')['Alias'].to_dict()
     filtered_df['IDEtapa'] = filtered_df['IDEtapa'].astype(str)
